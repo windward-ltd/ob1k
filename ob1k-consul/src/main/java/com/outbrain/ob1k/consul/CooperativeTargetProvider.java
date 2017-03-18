@@ -50,7 +50,7 @@ public class CooperativeTargetProvider extends ConsulBasedTargetProvider {
     return providedTargets;
   }
 
-  private Set<String> createTargetsPool(int targetsNum, List<String> currTargets) {
+  private Set<String> createTargetsPool(final int targetsNum, final List<String> currTargets) {
     // We assume that only the first target is likely to be used, the other targets
     // may serve for double dispatch. That's why we increment the round robin counter
     // by one instead of targetsNum.
@@ -75,7 +75,7 @@ public class CooperativeTargetProvider extends ConsulBasedTargetProvider {
     return providedTargetsSet;
   }
 
-  private void decreasePenalty(String target) {
+  private void decreasePenalty(final String target) {
     final int remainingPenalty = this.remainingPenalty.count(target);
     if (remainingPenalty > 0) {
       // Using the least of remainingPenalty - 1, penalize(target) is done to handle the case
@@ -86,15 +86,15 @@ public class CooperativeTargetProvider extends ConsulBasedTargetProvider {
     }
   }
 
-  private List<String> bestTargets(int targetsNum, Set<String> providedTargetsSet) {
+  private List<String> bestTargets(final int targetsNum, final Set<String> providedTargetsSet) {
     // create snapshots so that the comparator will not switch the order of targets during sorting.
-    Map<String, Integer> pendingRequests = Maps.newHashMapWithExpectedSize(providedTargetsSet.size());
+    final Map<String, Integer> pendingRequests = Maps.newHashMapWithExpectedSize(providedTargetsSet.size());
     providedTargetsSet.forEach(target -> pendingRequests.put(target, this.pendingRequests.count(target)));
 
-    Map<String, Integer> remainingPenalty = Maps.newHashMapWithExpectedSize(providedTargetsSet.size());
+    final Map<String, Integer> remainingPenalty = Maps.newHashMapWithExpectedSize(providedTargetsSet.size());
     providedTargetsSet.forEach(target -> remainingPenalty.put(target, this.remainingPenalty.count(target)));
 
-    Map<String, Integer> roundRobinPosition = Maps.newHashMapWithExpectedSize(providedTargetsSet.size());
+    final Map<String, Integer> roundRobinPosition = Maps.newHashMapWithExpectedSize(providedTargetsSet.size());
     providedTargetsSet.forEach(target -> roundRobinPosition.put(target, roundRobinPosition.size()));
 
     return Ordering.from(Comparator.<String, Integer>comparing(target -> remainingPenalty.get(target) + pendingRequests.get(target)).
@@ -103,7 +103,7 @@ public class CooperativeTargetProvider extends ConsulBasedTargetProvider {
   }
 
   @Override
-  public void onTargetsChanged(List<HealthInfoInstance> healthTargets) {
+  public void onTargetsChanged(final List<HealthInfoInstance> healthTargets) {
     super.onTargetsChanged(healthTargets);
 
     // Clear remainingPenalty, since we may never encounter
@@ -111,16 +111,16 @@ public class CooperativeTargetProvider extends ConsulBasedTargetProvider {
     remainingPenalty.clear();
   }
 
-  public void targetDispatched(String target) {
+  public void targetDispatched(final String target) {
     pendingRequests.add(target);
   }
 
-  public void targetDispatchEnded(String target, boolean success) {
+  public void targetDispatchEnded(final String target, final boolean success) {
     pendingRequests.remove(target);
     remainingPenalty.setCount(target, success ? 0 : penalize(target));
   }
 
-  private int penalize(String target) {
+  private int penalize(final String target) {
     return penalty + Math.max(maxPendingRequests - pendingRequests.count(target), 0);
   }
 }
