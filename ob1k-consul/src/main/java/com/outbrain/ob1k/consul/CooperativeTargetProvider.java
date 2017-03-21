@@ -1,114 +1,129 @@
 package com.outbrain.ob1k.consul;
 
+import static java.util.stream.Collectors.toList;
+
+import java.util.AbstractList;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import com.google.common.collect.ConcurrentHashMultiset;
-import com.google.common.collect.Maps;
 import com.google.common.collect.Multiset;
 import com.google.common.collect.Ordering;
 import com.outbrain.ob1k.client.targets.TargetProvider;
 
 /**
- * A {@link TargetProvider} that chooses targets likely to respond fast and successfully.
+ * A {@link TargetProvider} that chooses the targets most likely to respond fast and successfully.
  *
  * @author Amir Hadadi
  */
 public class CooperativeTargetProvider extends ConsulBasedTargetProvider {
 
-  private static final Logger log = LoggerFactory.getLogger(CooperativeTargetProvider.class);
   private static final int EXTRA_TARGETS = 10;
-  private final int penalty;
   private final Multiset<String> pendingRequests = ConcurrentHashMultiset.create();
-  private final Multiset<String> remainingPenalty = ConcurrentHashMultiset.create();
-  private final AtomicInteger roundRobin = new AtomicInteger();
-  private volatile int maxPendingRequests;
+  private final Set<String> failingTargets = Collections.newSetFromMap(new ConcurrentHashMap<>());
+  private final AtomicLong roundRobin = new AtomicLong();
 
-  public CooperativeTargetProvider(final HealthyTargetsList healthyTargetsList, final String urlSuffix, final Map<String, Integer> tag2weight, final int penalty) {
+  public CooperativeTargetProvider(final HealthyTargetsList healthyTargetsList, final String urlSuffix, final Map<String, Integer> tag2weight) {
     super(healthyTargetsList, urlSuffix, tag2weight);
-    this.penalty = penalty;
   }
 
   @Override
-  public List<String> provideTargetsImpl(final int targetsNum, final List<String> currTargets) {
-    final Set<String> providedTargetsSet = createTargetsPool(targetsNum, currTargets);
+  public List<String> provideTargetsImpl(final int targetsNum, final List<String> targets) {
+    final List<String> targetsPool = createTargetsPool(targetsNum, targets);
 
-    final List<String> providedTargets = new ArrayList<>(bestTargets(targetsNum, providedTargetsSet));
-
-    for (int i=0; providedTargets.size() < targetsNum; i++) {
-      providedTargets.add(providedTargets.get(i));
+    if (targetsPool.size() < targetsNum) {
+      return repeatTargets(targetsNum, targetsPool);
     }
 
-    return providedTargets;
+    final String firstTarget = targetsPool.get(0);
+    if (failingTargets.contains(firstTarget) && !pendingRequests.contains(firstTarget)) {
+      if (targetsNum == 1) {
+        return Collections.singletonList(firstTarget);
+      } else {
+        final List<String> providedTargets = new ArrayList<>(targetsNum);
+        providedTargets.add(firstTarget);
+        providedTargets.addAll(bestTargets(targetsNum - 1, targetsPool.subList(1, targetsPool.size())));
+        return providedTargets;
+      }
+    } else {
+      return bestTargets(targetsNum, targetsPool);
+    }
   }
 
-  private Set<String> createTargetsPool(final int targetsNum, final List<String> currTargets) {
+  private List<String> createTargetsPool(final int targetsNum, final List<String> targets) {
     // We assume that only the first target is likely to be used, the other targets
     // may serve for double dispatch. That's why we increment the round robin counter
     // by one instead of targetsNum.
-    final int index = roundRobin.getAndIncrement();
-
-    // Maintain the order of the elements so that we can tie break them
-    // by the round robin order.
-    final Set<String> providedTargetsSet = new LinkedHashSet<>();
+    final long index = roundRobin.getAndIncrement();
 
     // limit the target pool size to keep the complexity O(targetsNum).
-    final int targetsPool = Math.min(targetsNum + EXTRA_TARGETS, currTargets.size());
-    int maxPendingRequests = 0;
-    for (int i = 0; i < targetsPool; i++) {
-      final String target = currTargets.get(Math.abs((index + i) % currTargets.size()));
-      if (i == 0) {
-        decreasePenalty(target);
-      }
-      providedTargetsSet.add(target);
-      maxPendingRequests = Integer.max(maxPendingRequests, pendingRequests.count(target));
+    final int targetsPoolSize = Math.min(targetsNum + EXTRA_TARGETS, targets.size());
+    final List<String> targetsPool = new ArrayList<>(targetsPoolSize);
+    for (int i = 0; i < targetsPoolSize; i++) {
+      // We are using long for round robin, to avoid wrapping so that
+      // we get a distinct list of targets.
+      targetsPool.add(targets.get((int)((index + i) % targets.size())));
     }
-    this.maxPendingRequests = maxPendingRequests;
-    return providedTargetsSet;
+
+    return targetsPool;
   }
 
-  private void decreasePenalty(final String target) {
-    final int remainingPenalty = this.remainingPenalty.count(target);
-    if (remainingPenalty > 0) {
-      // Using the least of remainingPenalty - 1, penalize(target) is done to handle the case
-      // where a target was penalized heavily because the max number of
-      // pending requests was high at the time, but then the maximum decreased
-      // markedly, and its penalty is now too high.
-      this.remainingPenalty.setCount(target, Integer.min(remainingPenalty - 1, penalize(target)));
+  private List<String> repeatTargets(final int targetsNum, final List<String> providedTargets) {
+    for (int i = 0; providedTargets.size() < targetsNum; i++) {
+      providedTargets.add(providedTargets.get(i));
     }
+    return providedTargets;
   }
 
-  private List<String> bestTargets(final int targetsNum, final Set<String> providedTargetsSet) {
+  private List<String> bestTargets(final int targetsNum, final List<String> targetsPool) {
+
     // create snapshots so that the comparator will not switch the order of targets during sorting.
-    final Map<String, Integer> pendingRequests = Maps.newHashMapWithExpectedSize(providedTargetsSet.size());
-    providedTargetsSet.forEach(target -> pendingRequests.put(target, this.pendingRequests.count(target)));
+    final int poolSize = targetsPool.size();
+    final int[] pendingRequests = new int[poolSize];
+    final boolean[] failures = new boolean[poolSize];
+    for (int i = 0; i < poolSize; i++) {
+      final String target = targetsPool.get(i);
+      pendingRequests[i] = this.pendingRequests.count(target);
+      failures[i] = failingTargets.contains(target);
+    }
 
-    final Map<String, Integer> remainingPenalty = Maps.newHashMapWithExpectedSize(providedTargetsSet.size());
-    providedTargetsSet.forEach(target -> remainingPenalty.put(target, this.remainingPenalty.count(target)));
+    final List<Integer> indexes = new AbstractList<Integer>() {
+      @Override
+      public Integer get(final int index) {
+        return index;
+      }
 
-    final Map<String, Integer> roundRobinPosition = Maps.newHashMapWithExpectedSize(providedTargetsSet.size());
-    providedTargetsSet.forEach(target -> roundRobinPosition.put(target, roundRobinPosition.size()));
+      @Override
+      public int size() {
+        return poolSize;
+      }
+    };
 
-    return Ordering.from(Comparator.<String, Integer>comparing(target -> remainingPenalty.get(target) + pendingRequests.get(target)).
-                    thenComparing(roundRobinPosition::get)).
-            leastOf(providedTargetsSet, targetsNum);
+    return Ordering.from(Comparator.
+            // Successful targets come before failing targets.
+            <Integer, Boolean>comparing(index -> failures[index]).
+            // Targets with low number of pending requests come before targets with a high number.
+            thenComparingInt(index -> pendingRequests[index]).
+            // Tie break by round robin order.
+            thenComparingInt(x -> x)).
+            leastOf(indexes, targetsNum).
+            stream().
+            map(targetsPool::get).
+            collect(toList());
   }
 
   @Override
   public void onTargetsChanged(final List<HealthInfoInstance> healthTargets) {
     super.onTargetsChanged(healthTargets);
 
-    // Clear remainingPenalty, since we may never encounter
-    // any of these targets again.
-    remainingPenalty.clear();
+    // Clear failingTargets, since we may never encounter any of these targets again.
+    failingTargets.clear();
   }
 
   public void targetDispatched(final String target) {
@@ -117,10 +132,10 @@ public class CooperativeTargetProvider extends ConsulBasedTargetProvider {
 
   public void targetDispatchEnded(final String target, final boolean success) {
     pendingRequests.remove(target);
-    remainingPenalty.setCount(target, success ? 0 : penalize(target));
-  }
-
-  private int penalize(final String target) {
-    return penalty + Math.max(maxPendingRequests - pendingRequests.count(target), 0);
+    if (success) {
+      failingTargets.remove(target);
+    } else {
+      failingTargets.add(target);
+    }
   }
 }

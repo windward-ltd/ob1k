@@ -6,7 +6,6 @@ import static org.junit.Assert.assertEquals;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.stream.IntStream;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -30,7 +29,16 @@ public class CooperativeTargetProviderTest {
 
   @Before
   public void setup() {
-    provider = new CooperativeTargetProvider(healthyTargetsList, "urlSuffix", Collections.singletonMap("tag", 1), PENALTY);
+    provider = new CooperativeTargetProvider(healthyTargetsList, "urlSuffix", Collections.singletonMap("tag", 1));
+  }
+
+  @Test
+  public void testReturnByNumberOfPendingRequests2() {
+    provider.targetDispatched("t1");
+    final List<String> t = Collections.nCopies(12, "t");
+    for (int i=0; i < 10_000_000; i++) {
+      provider.provideTargetsImpl(2, t);
+    }
   }
 
   @Test
@@ -48,28 +56,6 @@ public class CooperativeTargetProviderTest {
   public void testClearPenaltiesOnTargetsChange() {
     provider.targetDispatchEnded("t1", false);
     provider.onTargetsChanged(Collections.emptyList());
-    assertEquals(singletonList("t1"), provider.provideTargetsImpl(1, TARGETS));
-  }
-
-  @Test
-  public void testPenaltyDecay() {
-    provider.targetDispatchEnded("t1", false);
-    IntStream.range(0, PENALTY).forEach(i -> assertEquals(singletonList("t2"), provider.provideTargetsImpl(1, TARGETS)));
-    assertEquals(singletonList("t1"), provider.provideTargetsImpl(1, TARGETS));
-  }
-
-  @Test
-  public void testDecreasePenaltyWhenTheMaximumPendingRequestsDecreases() {
-    final int requests = 10;
-    IntStream.range(0, requests).forEach(i -> provider.targetDispatched("t2"));
-
-    // t1 should now have a high penalty to make it non competitive with t2.
-    provider.targetDispatchEnded("t1", false);
-
-    // t1's penalty should decrease as t2 responded for all requests.
-    IntStream.range(0, requests).forEach(i -> provider.targetDispatchEnded("t2", true));
-
-    IntStream.range(0, PENALTY).forEach(i -> assertEquals(singletonList("t2"), provider.provideTargetsImpl(1, TARGETS)));
     assertEquals(singletonList("t1"), provider.provideTargetsImpl(1, TARGETS));
   }
 
