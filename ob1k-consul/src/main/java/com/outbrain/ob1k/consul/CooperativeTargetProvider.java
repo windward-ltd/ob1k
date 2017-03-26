@@ -62,7 +62,7 @@ public class CooperativeTargetProvider extends ConsulBasedTargetProvider {
     // limit the target pool size to keep the complexity O(targetsNum + extraTargets).
     final int targetsPoolSize = Math.min(targetsNum + extraTargets, Math.max(targetsNum, targets.size()));
 
-    final List<String> targetsPool = new ArrayList<>();
+    final List<String> targetsPool = new ArrayList<>(targetsPoolSize);
     for (int i=0; i<targetsPoolSize; i++) {
       // Using long for round robin to avoid wrapping, so that we get a distinct list of targets
       // in case targetsNum <= targets.size().
@@ -86,7 +86,7 @@ public class CooperativeTargetProvider extends ConsulBasedTargetProvider {
       failures[i] = failingTargets.contains(target);
     }
 
-    final List<Integer> indexes = new ArrayList<>();
+    final List<Integer> indexes = new ArrayList<>(poolSize);
     for (int i=0; i<poolSize; i++) {
       indexes.add(i);
     }
