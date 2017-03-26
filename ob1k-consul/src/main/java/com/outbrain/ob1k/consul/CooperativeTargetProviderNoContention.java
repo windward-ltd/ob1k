@@ -1,5 +1,8 @@
 package com.outbrain.ob1k.consul;
 
+import static java.util.stream.Collectors.toList;
+
+import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -7,30 +10,29 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.LongAdder;
 
-import com.google.common.collect.ConcurrentHashMultiset;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Multiset;
 import com.google.common.collect.Ordering;
 import com.outbrain.ob1k.client.targets.TargetProvider;
+import com.outbrain.ob1k.concurrent.handlers.FutureAction;
 
 /**
  * A {@link TargetProvider} that chooses the targets most likely to respond fast and successfully.
  *
  * @author Amir Hadadi
  */
-public class CooperativeTargetProvider extends ConsulBasedTargetProvider {
+public class CooperativeTargetProviderNoContention extends ConsulBasedTargetProvider {
 
-  private final Multiset<String> pendingRequests = ConcurrentHashMultiset.create();
+  private volatile ConcurrentMap<String, LongAdder> pendingRequests = new ConcurrentHashMap<>();
   private final Set<String> failingTargets = Collections.newSetFromMap(new ConcurrentHashMap<>());
-  private final AtomicLong roundRobin = new AtomicLong();
+  private final LongAdder roundRobin = new LongAdder();
   private final int extraTargets;
 
-  public CooperativeTargetProvider(final HealthyTargetsList healthyTargetsList,
-                                   final String urlSuffix,
-                                   final Map<String, Integer> tag2weight,
-                                   final int extraTargets) {
+  public CooperativeTargetProviderNoContention(final HealthyTargetsList healthyTargetsList,
+                                               final String urlSuffix,
+                                               final Map<String, Integer> tag2weight,
+                                               final int extraTargets) {
     super(healthyTargetsList, urlSuffix, tag2weight);
     this.extraTargets = extraTargets;
   }
@@ -43,7 +45,7 @@ public class CooperativeTargetProvider extends ConsulBasedTargetProvider {
 
     // We dispatch to a failing target if we got to it in the round robin order
     // and it has no pending requests.
-    if (failingTargets.contains(firstTarget) && !pendingRequests.contains(firstTarget)) {
+    if (failingTargets.contains(firstTarget) && pendingRequests(firstTarget) == 0) {
       final List<String> providedTargets = new ArrayList<>(targetsNum);
       providedTargets.add(firstTarget);
       providedTargets.addAll(bestTargets(targetsNum - 1, targetsPool.subList(1, targetsPool.size())));
@@ -57,17 +59,18 @@ public class CooperativeTargetProvider extends ConsulBasedTargetProvider {
     // We assume that only the first target is likely to be used, the other targets
     // may serve for double dispatch. That's why we increment the round robin counter
     // by one instead of targetsNum.
-    final long index = roundRobin.getAndIncrement();
+    roundRobin.increment();
+    final long index = roundRobin.sum();
 
-    // limit the target pool size to keep the complexity O(targetsNum + extraTargets).
+    // limit the target pool size to keep the complexity O(targetsNum).
     final int targetsPoolSize = Math.min(targetsNum + extraTargets, Math.max(targetsNum, targets.size()));
-
-    final List<String> targetsPool = new ArrayList<>();
-    for (int i=0; i<targetsPoolSize; i++) {
+    final List<String> targetsPool = new ArrayList<>(targetsPoolSize);
+    for (int i = 0; i < targetsPoolSize; i++) {
       // Using long for round robin to avoid wrapping, so that we get a distinct list of targets
       // in case targetsNum <= targets.size().
       targetsPool.add(targets.get((int)((index + i) % targets.size())));
     }
+
     return targetsPool;
   }
 
@@ -82,43 +85,70 @@ public class CooperativeTargetProvider extends ConsulBasedTargetProvider {
     final boolean[] failures = new boolean[poolSize];
     for (int i = 0; i < poolSize; i++) {
       final String target = targetsPool.get(i);
-      pendingRequests[i] = this.pendingRequests.count(target);
+      pendingRequests[i] = pendingRequests(target);
       failures[i] = failingTargets.contains(target);
     }
 
-    final List<Integer> indexes = new ArrayList<>();
-    for (int i=0; i<poolSize; i++) {
-      indexes.add(i);
-    }
+    final List<Integer> indexes = new AbstractList<Integer>() {
+      @Override
+      public Integer get(final int index) {
+        return index;
+      }
 
-    final List<Integer> bestIndices = Ordering.from(Comparator.
+      @Override
+      public int size() {
+        return poolSize;
+      }
+    };
+
+    return Ordering.from(Comparator.
             // Successful targets come before failing targets.
-                    <Integer, Boolean>comparing(index -> failures[index]).
+            <Integer, Boolean>comparing(index -> failures[index]).
             // Targets with low number of pending requests come before targets with a high number.
-                    thenComparingInt(index -> pendingRequests[index]).
+            thenComparingInt(index -> pendingRequests[index]).
             // Tie break by round robin order.
-                    thenComparingInt(x -> x)).
-            leastOf(indexes, targetsNum);
+            thenComparingInt(x -> x)).
+            leastOf(indexes, targetsNum).
+            stream().
+            map(targetsPool::get).
+            collect(toList());
+  }
 
-    // Lists.transform is significantly faster then stream + collect to list.
-    return Lists.transform(bestIndices, targetsPool::get);
+  private int pendingRequests(final String target) {
+    final ConcurrentMap<String, LongAdder> pendingRequests = this.pendingRequests;
+    final LongAdder longAdder = pendingRequests.get(target);
+    return longAdder == null ? 0 : longAdder.intValue();
   }
 
   @Override
   protected void notifyTargetsChanged(final List<String> targets) {
+    pendingRequests = new ConcurrentHashMap<>();
     failingTargets.retainAll(targets);
   }
 
-  public void targetDispatched(final String target) {
-    pendingRequests.add(target);
+  public void targetDispatched(final String target, FutureAction<?> action) {
+    final ConcurrentMap<String, LongAdder> pendingRequests = this.pendingRequests;
+    LongAdder tmpCount = pendingRequests.get(target);
+    if (tmpCount == null) {
+      tmpCount = pendingRequests.computeIfAbsent(target, t -> new LongAdder());
+    }
+    final LongAdder count = tmpCount;
+    count.increment();
+    action.execute().andThen(t -> {
+      count.decrement();
+      if (t.isSuccess()) {
+        failingTargets.remove(target);
+      } else {
+        failingTargets.add(target);
+      }
+    });
   }
 
-  public void targetDispatchEnded(final String target, final boolean success) {
-    pendingRequests.remove(target);
-    if (success) {
-      failingTargets.remove(target);
-    } else {
-      failingTargets.add(target);
-    }
+  public void targetDispatched(String t1) {
+
+  }
+
+  public void targetDispatchEnded(String t1, boolean b) {
+
   }
 }

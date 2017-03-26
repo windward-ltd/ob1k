@@ -28,13 +28,13 @@ import io.netty.util.internal.ThreadLocalRandom;
 public class ConsulBasedTargetProvider implements TargetProvider, HealthyTargetsList.TargetsChangedListener {
 
   private static final Logger log = LoggerFactory.getLogger(ConsulBasedTargetProvider.class);
-
   private final ThreadLocal<Integer> currIndex = new ThreadLocal<Integer>() {
     @Override
     protected Integer initialValue() {
       return ThreadLocalRandom.current().nextInt();
     }
   };
+
 
   private final String urlSuffix;
   private final Map<String, Integer> tag2weight;
@@ -105,7 +105,12 @@ public class ConsulBasedTargetProvider implements TargetProvider, HealthyTargets
 
     Collections.shuffle(targets);
     this.targets = targets;
+    notifyTargetsChanged(targets);
     log.debug("New weighed targets: {}", targets);
+  }
+
+  protected void notifyTargetsChanged(List<String> targets) {
+
   }
 
   private String createTargetUrl(final HealthInfoInstance healthInfo) {
