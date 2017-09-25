@@ -73,6 +73,7 @@
     <spring-ldap-core.version>2.0.3.RELEASE</spring-ldap-core.version>
     <findbugs-maven-plugin.version>3.0.3</findbugs-maven-plugin.version>
     <findbugs.skip>false</findbugs.skip>
+    <nexus.repository>http://nexus.windward.com:8081/nexus/content/repositories</nexus.repository>
   </properties>
 
   <profiles>
@@ -94,6 +95,17 @@
       <url>https://api.bintray.com/maven/outbrain/OutbrainOSS/OB1K/</url>
     </repository>
   </distributionManagement-->
+
+  <distributionManagement>
+    <repository>
+      <id>nexus</id>
+      <url>${nexus.repository}/windward-releases</url>
+    </repository>
+    <snapshotRepository>
+      <id>nexus</id>
+      <url>${nexus.repository}/windward-snapshots</url>
+    </snapshotRepository>
+  </distributionManagement>
 
   <build>
     <plugins>
