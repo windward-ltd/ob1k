@@ -3,7 +3,7 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.outbrain.swinfra</groupId>
-  <version>0.122</version>
+  <version>0.122-ww</version>
   <artifactId>ob1k</artifactId>
   <name>Ob1k - The RPC Framework</name>
   <packaging>pom</packaging>
@@ -70,6 +70,7 @@
     <org.springframework.version>4.0.7.RELEASE</org.springframework.version>
     <metrics.version>2.1.2</metrics.version>
     <spring-ldap-core.version>2.0.3.RELEASE</spring-ldap-core.version>
+    <nexus.repository>http://nexus.windward.com:8081/nexus/content/repositories</nexus.repository>
   </properties>
 
   <profiles>
@@ -85,11 +86,22 @@
     </profile>
   </profiles>
 
-  <distributionManagement>
+  <!--distributionManagement>
     <repository>
       <id>Outbrain-Bintray</id>
       <url>https://api.bintray.com/maven/outbrain/OutbrainOSS/OB1K/</url>
     </repository>
+  </distributionManagement-->
+
+  <distributionManagement>
+    <repository>
+      <id>nexus</id>
+      <url>${nexus.repository}/windward-releases</url>
+    </repository>
+    <snapshotRepository>
+      <id>nexus</id>
+      <url>${nexus.repository}/windward-snapshots</url>
+    </snapshotRepository>
   </distributionManagement>
 
   <build>
