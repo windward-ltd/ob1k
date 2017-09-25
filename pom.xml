@@ -88,12 +88,12 @@
     </profile>
   </profiles>
 
-  <distributionManagement>
+  <!--distributionManagement>
     <repository>
       <id>Outbrain-Bintray</id>
       <url>https://api.bintray.com/maven/outbrain/OutbrainOSS/OB1K/</url>
     </repository>
-  </distributionManagement>
+  </distributionManagement-->
 
   <build>
     <plugins>
